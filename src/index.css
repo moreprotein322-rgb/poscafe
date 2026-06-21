@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@keyframes qris-sweep {
+  0% { top: 4px; }
+  50% { top: calc(100% - 8px); }
+  100% { top: 4px; }
+}
+
+.animate-scanner-bar {
+  animation: qris-sweep 3s ease-in-out infinite;
+}

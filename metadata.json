@@ -1,0 +1,6 @@
+{
+  "name": "QR Cafe Order",
+  "description": "Sistem Web Order Online Cafe Modern berbasis QR Code dengan Menu Digital, Keranjang, Waitress Fee 2%, Simulasi Cashless, dan Multi-Role Dashboard (Pelanggan, Kasir, Dapur, Waitress, Admin).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
