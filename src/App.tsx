@@ -20,7 +20,9 @@ import {
   Lock,
   User,
   Hash,
-  MoreVertical
+  MoreVertical,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Product, Order, OrderItem, MenuCategory, DeliveryType, PaymentMethod, OrderStatus, PaymentStatus, Table, Voucher, Review } from './types';
 
@@ -428,6 +430,57 @@ export default function App() {
     if (confirm('Hapus item menu ini?')) {
       await fetch(`/api/menus/${id}`, { method: 'DELETE' });
       fetchMenus();
+    }
+  };
+
+  const handleUpdateProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProduct) return;
+    try {
+      const res = await fetch(`/api/menus/${editingProduct.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editingProduct.name,
+          category: editingProduct.category,
+          price: Number(editingProduct.price),
+          description: editingProduct.description,
+          image: editingProduct.image,
+          stock: Number(editingProduct.stock),
+          isPopular: !!editingProduct.isPopular,
+          isPromo: !!editingProduct.isPromo
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setEditingProduct(null);
+        fetchMenus();
+        alert('Menu kuliner berhasil diperbarui!');
+      } else {
+        alert(data.error || 'Gagal memperbarui menu');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) { // 2MB limit
+        alert('Ukuran foto terlalu besar! Maksimal 2MB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        if (editingProduct) {
+          setEditingProduct({ ...editingProduct, image: base64String });
+        } else {
+          setNewMenuForm({ ...newMenuForm, image: base64String });
+        }
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -1470,69 +1523,309 @@ export default function App() {
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 
                 <div className="bg-[#161616] p-5 rounded-2xl border border-white/5 space-y-4">
-                  <h3 className="text-xs font-bold text-[#C8A97E] uppercase font-mono tracking-widest">Tambah Item Menu</h3>
+                  <h3 className="text-xs font-bold text-[#C8A97E] uppercase font-mono tracking-widest">
+                    {editingProduct ? '✏ Edit Item Menu' : '📋 Tambah Item Menu'}
+                  </h3>
                   
-                  <form onSubmit={handleAddProduct} className="space-y-3">
-                    <div>
-                      <label className="text-[10px] text-stone-400 block mb-1">Nama Produk:*</label>
-                      <input
-                        type="text"
-                        required
-                        value={newMenuForm.name}
-                        onChange={(e) => setNewMenuForm({ ...newMenuForm, name: e.target.value })}
-                        className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
-                        placeholder="Premium Macchiato"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
+                  {editingProduct ? (
+                    <form onSubmit={handleUpdateProduct} className="space-y-3">
                       <div>
-                        <label className="text-[10px] text-stone-400 block mb-1">Kategori:*</label>
-                        <select
-                          value={newMenuForm.category}
-                          onChange={(e) => setNewMenuForm({ ...newMenuForm, category: e.target.value as MenuCategory })}
-                          className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
-                        >
-                          {['Coffee', 'Non Coffee', 'Tea', 'Snack', 'Dessert', 'Main Course'].map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="text-[10px] text-stone-400 block mb-1">Harga (IDR):*</label>
+                        <label className="text-[10px] text-stone-400 block mb-1">Nama Produk:*</label>
                         <input
-                          type="number"
+                          type="text"
                           required
-                          value={newMenuForm.price}
-                          onChange={(e) => setNewMenuForm({ ...newMenuForm, price: e.target.value })}
+                          value={editingProduct.name}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
                           className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          placeholder="Premium Macchiato"
                         />
                       </div>
-                    </div>
 
-                    <div>
-                      <label className="text-[10px] text-stone-400 block mb-1">Url Link Foto:</label>
-                      <input
-                        type="text"
-                        value={newMenuForm.image}
-                        onChange={(e) => setNewMenuForm({ ...newMenuForm, image: e.target.value })}
-                        className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-stone-300"
-                        placeholder="https://images.unsplash.com..."
-                      />
-                    </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Kategori:*</label>
+                          <select
+                            value={editingProduct.category}
+                            onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value as MenuCategory })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          >
+                            {['Coffee', 'Non Coffee', 'Tea', 'Snack', 'Dessert', 'Main Course'].map(cat => (
+                              <option key={cat} value={cat}>{cat}</option>
+                            ))}
+                          </select>
+                        </div>
 
-                    <div>
-                      <label className="text-[10px] text-stone-400 block mb-1">Kuliner Deskripsi:</label>
-                      <textarea
-                        value={newMenuForm.description}
-                        onChange={(e) => setNewMenuForm({ ...newMenuForm, description: e.target.value })}
-                        className="w-full h-14 bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
-                      />
-                    </div>
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Harga (IDR):*</label>
+                          <input
+                            type="number"
+                            required
+                            value={editingProduct.price}
+                            onChange={(e) => setEditingProduct({ ...editingProduct, price: Number(e.target.value) })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          />
+                        </div>
+                      </div>
 
-                    <button type="submit" className="w-full py-2 bg-[#C8A97E] text-slate-955 text-slate-950 font-bold text-xs uppercase tracking-wider rounded font-mono cursor-pointer">Simpan Menu ✔</button>
-                  </form>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Stok saat ini:*</label>
+                          <input
+                            type="number"
+                            required
+                            min="0"
+                            value={editingProduct.stock}
+                            onChange={(e) => setEditingProduct({ ...editingProduct, stock: Number(e.target.value) })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          />
+                        </div>
+
+                        <div className="flex flex-col justify-end pb-1 space-y-1">
+                          <label className="flex items-center gap-1.5 text-[10px] text-stone-300 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!editingProduct.isPopular}
+                              onChange={(e) => setEditingProduct({ ...editingProduct, isPopular: e.target.checked })}
+                              className="accent-[#C8A97E] h-3 w-3"
+                            />
+                            Menu Terlaris (Popular)
+                          </label>
+                          <label className="flex items-center gap-1.5 text-[10px] text-stone-300 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!editingProduct.isPromo}
+                              onChange={(e) => setEditingProduct({ ...editingProduct, isPromo: e.target.checked })}
+                              className="accent-[#C8A97E] h-3 w-3"
+                            />
+                            Sedang Promo (Promo)
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Photo Upload container */}
+                      <div className="bg-[#121212] p-2.5 rounded border border-white/10 space-y-2">
+                        <label className="text-[10px] text-[#C8A97E] font-bold block font-mono uppercase">🖼 Foto / Gambar Menu</label>
+                        
+                        {editingProduct.image ? (
+                          <div className="relative group w-full h-24 bg-stone-900 rounded overflow-hidden flex items-center justify-center border border-white/5">
+                            <img src={editingProduct.image} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditingProduct({ ...editingProduct, image: '' })}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-sans font-bold cursor-pointer transition select-none"
+                              >
+                                Hapus Foto X
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="py-4 px-2 border border-dashed border-white/10 rounded text-center text-stone-500 flex flex-col items-center justify-center gap-1">
+                            <Upload className="w-5 h-5 text-stone-400" />
+                            <span className="text-[10px] block">Pilih file foto dari device Anda</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id="edit-product-file-input"
+                            className="hidden"
+                            onChange={handleImageUpload}
+                          />
+                          <label
+                            htmlFor="edit-product-file-input"
+                            className="flex-1 text-center py-1.5 bg-stone-800 hover:bg-stone-750 text-[#C8A97E] rounded text-[10.5px] font-bold cursor-pointer border border-[#C8A97E]/10 select-none transition"
+                          >
+                            📁 Upload File Foto
+                          </label>
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-stone-500 block mb-1">Atau masukkan URL Foto Manual:</label>
+                          <input
+                            type="text"
+                            value={editingProduct.image}
+                            onChange={(e) => setEditingProduct({ ...editingProduct, image: e.target.value })}
+                            className="w-full bg-stone-950 border border-white/5 rounded p-1.5 text-[10.5px] text-stone-300 font-mono"
+                            placeholder="https://..."
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] text-stone-400 block mb-1">Kuliner Deskripsi:</label>
+                        <textarea
+                          value={editingProduct.description}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, description: e.target.value })}
+                          className="w-full h-14 bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          placeholder="Deskripsi cita rasa menu..."
+                        />
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs uppercase tracking-wider rounded font-mono cursor-pointer transition shadow-md"
+                        >
+                          Simpan Perubahan ✔
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingProduct(null)}
+                          className="px-3.5 py-2 bg-stone-800 hover:bg-stone-750 text-white rounded text-xs transition cursor-pointer"
+                        >
+                          Batal
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleAddProduct} className="space-y-3">
+                      <div>
+                        <label className="text-[10px] text-stone-400 block mb-1">Nama Produk:*</label>
+                        <input
+                          type="text"
+                          required
+                          value={newMenuForm.name}
+                          onChange={(e) => setNewMenuForm({ ...newMenuForm, name: e.target.value })}
+                          className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          placeholder="Premium Macchiato"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Kategori:*</label>
+                          <select
+                            value={newMenuForm.category}
+                            onChange={(e) => setNewMenuForm({ ...newMenuForm, category: e.target.value as MenuCategory })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          >
+                            {['Coffee', 'Non Coffee', 'Tea', 'Snack', 'Dessert', 'Main Course'].map(cat => (
+                              <option key={cat} value={cat}>{cat}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Harga (IDR):*</label>
+                          <input
+                            type="number"
+                            required
+                            placeholder="25000"
+                            value={newMenuForm.price}
+                            onChange={(e) => setNewMenuForm({ ...newMenuForm, price: e.target.value })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Stok Awal:*</label>
+                          <input
+                            type="number"
+                            required
+                            min="0"
+                            value={newMenuForm.stock}
+                            onChange={(e) => setNewMenuForm({ ...newMenuForm, stock: e.target.value })}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          />
+                        </div>
+
+                        <div className="flex flex-col justify-end pb-1 space-y-1">
+                          <label className="flex items-center gap-1.5 text-[10px] text-stone-300 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={newMenuForm.isPopular}
+                              onChange={(e) => setNewMenuForm({ ...newMenuForm, isPopular: e.target.checked })}
+                              className="accent-[#C8A97E] h-3 w-3"
+                            />
+                            Menu Terlaris (Popular)
+                          </label>
+                          <label className="flex items-center gap-1.5 text-[10px] text-stone-300 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={newMenuForm.isPromo}
+                              onChange={(e) => setNewMenuForm({ ...newMenuForm, isPromo: e.target.checked })}
+                              className="accent-[#C8A97E] h-3 w-3"
+                            />
+                            Sedang Promo (Promo)
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Photo Upload container */}
+                      <div className="bg-[#121212] p-2.5 rounded border border-white/10 space-y-2">
+                        <label className="text-[10px] text-[#C8A97E] font-bold block font-mono uppercase">🖼 Foto / Gambar Menu</label>
+                        
+                        {newMenuForm.image ? (
+                          <div className="relative group w-full h-24 bg-stone-900 rounded overflow-hidden flex items-center justify-center border border-white/5">
+                            <img src={newMenuForm.image} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setNewMenuForm({ ...newMenuForm, image: '' })}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-sans font-bold cursor-pointer transition select-none"
+                              >
+                                Hapus Foto X
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="py-4 px-2 border border-dashed border-white/10 rounded text-center text-stone-500 flex flex-col items-center justify-center gap-1">
+                            <Upload className="w-5 h-5 text-stone-400" />
+                            <span className="text-[10px] block">Pilih file foto dari device Anda</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id="add-product-file-input"
+                            className="hidden"
+                            onChange={handleImageUpload}
+                          />
+                          <label
+                            htmlFor="add-product-file-input"
+                            className="flex-1 text-center py-1.5 bg-stone-800 hover:bg-stone-750 text-[#C8A97E] rounded text-[10.5px] font-bold cursor-pointer border border-[#C8A97E]/10 select-none transition"
+                          >
+                            📁 Pilih File Gambar / Upload Foto
+                          </label>
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-stone-500 block mb-1">Atau masukkan URL Foto Manual:</label>
+                          <input
+                            type="text"
+                            value={newMenuForm.image}
+                            onChange={(e) => setNewMenuForm({ ...newMenuForm, image: e.target.value })}
+                            className="w-full bg-stone-950 border border-white/5 rounded p-1.5 text-[10.5px] text-stone-300 font-mono"
+                            placeholder="https://..."
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] text-stone-400 block mb-1">Kuliner Deskripsi:</label>
+                        <textarea
+                          value={newMenuForm.description}
+                          onChange={(e) => setNewMenuForm({ ...newMenuForm, description: e.target.value })}
+                          className="w-full h-14 bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          placeholder="Deskripsi cita rasa menu..."
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-2 bg-[#C8A97E] hover:bg-[#b5966b] text-slate-950 font-bold text-xs uppercase tracking-wider rounded font-mono cursor-pointer transition select-none"
+                      >
+                        Simpan Menu ✔
+                      </button>
+                    </form>
+                  )}
                 </div>
 
                 <div className="col-span-full xl:col-span-2 bg-[#161616] p-5 rounded-2xl border border-white/5 space-y-4">
@@ -1542,10 +1835,14 @@ export default function App() {
                     {products.map(p => (
                       <div key={p.id} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div className="flex items-center gap-2.5">
-                          <img src={p.image} alt={p.name} className="w-10 h-10 rounded object-cover shrink-0 bg-stone-800" />
+                          <img src={p.image} alt={p.name} className="w-10 h-10 rounded object-cover shrink-0 bg-stone-800" referrerPolicy="no-referrer" />
                           <div>
-                            <span className="text-[9px] bg-white/5 px-1.5 py-0.2 rounded text-[#C8A97E] font-mono">{p.category}</span>
-                            <h4 className="text-xs font-bold text-white">{p.name}</h4>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] bg-white/5 px-1.5 py-0.2 rounded text-[#C8A97E] font-mono">{p.category}</span>
+                              {p.isPopular && <span className="text-[8px] bg-amber-500/10 text-amber-500 border border-amber-500/10 px-1 py-0.1 rounded font-bold uppercase font-mono">POPULAR</span>}
+                              {p.isPromo && <span className="text-[8px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 px-1 py-0.1 rounded font-bold uppercase font-mono">PROMO</span>}
+                            </div>
+                            <h4 className="text-xs font-bold text-white mt-0.5">{p.name}</h4>
                             <p className="text-[11px] text-stone-400">Rp{p.price.toLocaleString('id-ID')}</p>
                           </div>
                         </div>
@@ -1555,12 +1852,19 @@ export default function App() {
                             <span className="text-[10px] text-stone-500">Stok:</span>
                             <span className="text-xs font-mono font-bold text-white w-4 text-center">{p.stock}</span>
                             <div className="flex flex-col">
-                              <button onClick={() => handleUpdateStock(p.id, p.stock + 1)} className="text-[9px] text-[#C8A97E] px-1 font-bold cursor-pointer">+</button>
-                              <button onClick={() => handleUpdateStock(p.id, Math.max(0, p.stock - 1))} className="text-[9px] text-stone-500 px-1 font-bold cursor-pointer">-</button>
+                              <button onClick={() => handleUpdateStock(p.id, p.stock + 1)} className="text-[9px] text-[#C8A97E] px-1 font-bold cursor-pointer select-none">+</button>
+                              <button onClick={() => handleUpdateStock(p.id, Math.max(0, p.stock - 1))} className="text-[9px] text-stone-500 px-1 font-bold cursor-pointer select-none">-</button>
                             </div>
                           </div>
 
-                          <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 bg-rose-500/5 hover:bg-rose-500/20 border border-rose-500/20 text-rose-500 rounded cursor-pointer">
+                          <button
+                            onClick={() => setEditingProduct(p)}
+                            className="px-2.5 py-1 text-xs bg-stone-850 hover:bg-stone-850 border border-white/10 hover:border-white/20 text-stone-300 rounded cursor-pointer transition select-none"
+                          >
+                            Edit ✏
+                          </button>
+
+                          <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 bg-rose-500/5 hover:bg-rose-500/20 border border-rose-500/20 text-rose-500 rounded cursor-pointer select-none">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>

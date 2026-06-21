@@ -205,7 +205,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
   // Log action helper
   const writeLog = (action: string, user: string = 'System') => {
@@ -256,6 +257,7 @@ async function startServer() {
 
     db.products.push(newProduct);
     writeLog(`Menambahkan produk baru: ${name}`, 'Admin');
+    saveDB();
     res.status(201).json(newProduct);
   });
 
@@ -281,6 +283,7 @@ async function startServer() {
     };
 
     writeLog(`Mengubah detail produk: ${db.products[index].name}`, 'Admin');
+    saveDB();
     res.json(db.products[index]);
   });
 
@@ -293,6 +296,7 @@ async function startServer() {
     const name = db.products[index].name;
     db.products.splice(index, 1);
     writeLog(`Menghapus produk: ${name}`, 'Admin');
+    saveDB();
     res.json({ message: 'Menu berhasil dihapus' });
   });
 
