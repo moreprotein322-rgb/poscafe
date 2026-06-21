@@ -239,7 +239,7 @@ async function startServer() {
 
   app.post('/api/menus', (req, res) => {
     const { name, category, price, originalPrice, description, image, stock, isPopular, isPromo } = req.body;
-    if (!name || !category || !price) {
+    if (!name || !category || price === undefined || price === null || price === '') {
       return res.status(400).json({ error: 'Nama, Kategori, dan Harga wajib diisi!' });
     }
     const newProduct: Product = {

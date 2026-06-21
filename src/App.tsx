@@ -393,6 +393,7 @@ export default function App() {
           stock: Number(newMenuForm.stock)
         })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setNewMenuForm({
           name: '',
@@ -407,9 +408,12 @@ export default function App() {
         fetchMenus();
         fetchOrdersAndReports();
         alert('Menu kuliner berhasil disimpan!');
+      } else {
+        alert(data.error || 'Gagal menambahkan menu. Silakan periksa kembali data Anda.');
       }
     } catch (e) {
       console.error(e);
+      alert('Terjadi kesalahan jaringan saat menyimpan menu.');
     }
   };
 
