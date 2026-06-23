@@ -9,8 +9,28 @@ export interface Product {
   description: string;
   image: string;
   stock: number;
+  min_stock_alert: number;
   isPopular?: boolean;
   isPromo?: boolean;
+}
+
+export interface StockLog {
+  id: string;
+  productId: string;
+  type: 'IN' | 'OUT';
+  quantity: number;
+  notes: string;
+  createdAt: string;
+}
+
+export type WaiterCallStatus = 'Waiting' | 'Accepted' | 'Completed';
+
+export interface WaiterCall {
+  id: string;
+  tableNumber: string;
+  status: WaiterCallStatus;
+  createdAt: string;
+  completedAt?: string;
 }
 
 export interface OrderItem {
@@ -24,7 +44,7 @@ export interface OrderItem {
 export type OrderStatus = 'Pending' | 'Paid' | 'Preparing' | 'Ready' | 'Delivered' | 'Completed' | 'Cancelled';
 export type PaymentStatus = 'Unpaid' | 'Waiting Payment' | 'Paid' | 'Failed' | 'Refunded';
 export type DeliveryType = 'Ambil Sendiri' | 'Diantar ke Meja';
-export type PaymentMethod = 'Cash' | 'QRIS' | 'GoPay' | 'OVO' | 'DANA' | 'ShopeePay' | 'Virtual Account' | 'Credit Card';
+export type PaymentMethod = 'Cash' | 'Cashless' | 'QRIS' | 'GoPay' | 'OVO' | 'DANA' | 'ShopeePay' | 'Virtual Account' | 'Credit Card';
 
 export interface Order {
   id: string;
@@ -56,8 +76,7 @@ export interface Table {
 export interface Voucher {
   code: string;
   discountPercentage: number;
-  maxDiscount: number;
-  minTransaction: number;
+  minTransaction?: number | null;
   description: string;
 }
 
