@@ -27,6 +27,7 @@ import {
   Share2
 } from 'lucide-react';
 import { Product, Order, OrderItem, MenuCategory, DeliveryType, PaymentMethod, OrderStatus, PaymentStatus, Table, Voucher, Review } from './types';
+import { verifyConnection } from './supabaseClient';
 import {
   initAuth,
   googleSignIn,
@@ -39,8 +40,6 @@ import {
   importMenusFromSheet,
   exportOrdersToSheet
 } from './workspaceAuth';
-
-import { supabase } from './supabaseClient';
 
 export default function App() {
   // Navigation & Role states
@@ -117,6 +116,8 @@ export default function App() {
 
   // Parse table parameter from query string
   useEffect(() => {
+    verifyConnection();
+    
     const params = new URLSearchParams(window.location.search);
     const tableParam = params.get('table');
     if (tableParam) {
@@ -127,12 +128,9 @@ export default function App() {
 
   const fetchMenus = async () => {
     try {
-      const { data, error } = await supabase.from('products').select('*');
-      if (error) {
-        console.error("Gagal load menu: ", error);
-        return;
-      }
-      setProducts(data || []);
+      const res = await fetch('/api/menus');
+      const data = await res.json();
+      setProducts(data);
     } catch (e) {
       console.error(e);
     }
@@ -140,115 +138,17 @@ export default function App() {
 
   const fetchOrdersAndReports = async () => {
     try {
-      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-      if (error) {
-        console.error("Gagal load pesanan: ", error);
-        return;
-      }
-      const ordersData = data || [];
-      
-      // format orders based on DB columns if they use snake_case
-      const formattedOrders = ordersData.map((o: any) => ({
-        id: o.id,
-        shortId: o.short_id || o.shortId || o.id.toString(),
-        customerName: o.customer_name || o.customerName || 'Customer',
-        tableNumber: o.table_number || o.tableNumber || '00',
-        tableNo: o.table_number || o.tableNumber || '00',
-        deliveryType: (o.table_number || o.tableNumber) === 'Ambil Sendiri' ? 'Ambil Sendiri' : 'Diantar ke Meja',
-        items: o.items || [],
-        subtotal: Number(o.subtotal) || 0,
-        waitressFee: Number(o.tax || o.waitressFee || o.waitress_fee) || 0,
-        discount: Number(o.discount) || 0,
-        grandTotal: Number(o.total || o.grandTotal || o.grand_total) || 0,
-        paymentMethod: o.payment_method || o.paymentMethod || 'Other',
-        paymentStatus: o.payment_status || o.paymentStatus || 'Waiting Payment',
-        orderStatus: o.order_status || o.orderStatus || 'Pending',
-        createdAt: o.created_at || o.createdAt || new Date().toISOString(),
-        rating: o.rating,
-        review: o.review
-      }));
-      setOrderHistory(formattedOrders);
+      const resOrders = await fetch('/api/orders');
+      const ordersData = await resOrders.json();
+      setOrderHistory(ordersData);
 
-      // Construct Reports Client Side
-      const completedOrders = formattedOrders.filter((o: any) => o.orderStatus !== 'Cancelled');
-      const totalOmzet = completedOrders.reduce((sum: number, o: any) => sum + (o.paymentStatus === 'Paid' ? o.grandTotal : 0), 0);
-      const totalWaitressFee = completedOrders.reduce((sum: number, o: any) => sum + (o.paymentStatus === 'Paid' ? o.waitressFee : 0), 0);
-      const totalPajak = completedOrders.reduce((sum: number, o: any) => sum + (o.paymentStatus === 'Paid' ? o.waitressFee : 0), 0);
-      const subtotalOmzet = completedOrders.reduce((sum: number, o: any) => sum + (o.paymentStatus === 'Paid' ? o.subtotal : 0), 0);
-      const totalDiskon = completedOrders.reduce((sum: number, o: any) => sum + (o.paymentStatus === 'Paid' ? o.discount : 0), 0);
+      const resReports = await fetch('/api/reports');
+      const reports = await resReports.json();
+      setReportData(reports);
 
-      // Dynamic Sales by date distribution (Last 7 days)
-      const salesByDay: Record<string, number> = {};
-      const feesByDay: Record<string, number> = {};
-      const dates = Array.from({ length: 7 }, (_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        return d.toISOString().split('T')[0];
-      }).reverse();
-
-      dates.forEach(d => { salesByDay[d] = 0; feesByDay[d] = 0; });
-
-      completedOrders.forEach((o: any) => {
-        if (o.paymentStatus === 'Paid') {
-          const dateStr = o.createdAt.split('T')[0];
-          if (salesByDay[dateStr] !== undefined) {
-            salesByDay[dateStr] += o.grandTotal;
-            feesByDay[dateStr] += o.waitressFee;
-          }
-        }
-      });
-
-      const reportDaily = dates.map(d => ({ date: d, omzet: salesByDay[d], fees: feesByDay[d] }));
-
-      // Bestseller menu analysis
-      const itemsMap: Record<string, { name: string; category: string; quantity: number; revenue: number }> = {};
-      completedOrders.forEach((o: any) => {
-        if (o.paymentStatus === 'Paid') {
-          o.items.forEach((item: any) => {
-            const pid = item.productId || item.id;
-            if (!itemsMap[pid]) {
-              const p = products.find(prod => prod.id === pid);
-              itemsMap[pid] = {
-                name: item.name,
-                category: p ? p.category : 'Lainnya',
-                quantity: 0,
-                revenue: 0
-              };
-            }
-            itemsMap[pid].quantity += item.quantity;
-            itemsMap[pid].revenue += item.price * item.quantity;
-          });
-        }
-      });
-
-      const bestSellers = Object.values(itemsMap).sort((a, b) => b.quantity - a.quantity);
-
-      setReportData({
-        totalOmzet,
-        totalWaitressFee,
-        totalDiskon,
-        totalPajak,
-        subtotalOmzet,
-        dailySales: reportDaily,
-        bestSellers,
-        logs: [],
-        totalOrdersCount: formattedOrders.length,
-        unpaidCount: formattedOrders.filter((o: any) => o.paymentStatus === 'Unpaid' || o.paymentStatus === 'Waiting Payment').length,
-        preparingCount: formattedOrders.filter((o: any) => o.orderStatus === 'Preparing').length,
-        readyCount: formattedOrders.filter((o: any) => o.orderStatus === 'Ready').length
-      });
-
-      // Clear notifications
-      const notifs = formattedOrders
-        .filter((o: any) => o.orderStatus === 'Pending' || o.paymentStatus === 'Waiting Payment')
-        .map((o: any) => ({
-          id: 'n_' + o.id,
-          title: `Pesanan Baru: ${o.shortId}`,
-          message: `Total: Rp${o.grandTotal.toLocaleString()} - Meja: ${o.tableNumber}`,
-          isRead: false
-        }));
+      const resNotif = await fetch('/api/notifications');
+      const notifs = await resNotif.json();
       setNotifications(notifs);
-
     } catch (e) {
       console.error(e);
     }
@@ -256,11 +156,8 @@ export default function App() {
 
   const fetchVouchers = async () => {
     try {
-      const { data, error } = await supabase.from('vouchers').select('*');
-      if (error) {
-        console.error("Gagal load voucher: ", error);
-        return;
-      }
+      const res = await fetch('/api/vouchers');
+      const data = await res.json();
       setVouchers(data || []);
     } catch (e) {
       console.error(e);
@@ -466,24 +363,15 @@ export default function App() {
     };
 
     try {
-      const payload = {
-        short_id: `A${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
-        customer_name: customerName || 'Pelanggan Meja ' + currentTableNum,
-        table_number: deliveryType === 'Ambil Sendiri' ? 'Ambil Sendiri' : currentTableNum,
-        items: cart,
-        subtotal: sub,
-        tax: fee,
-        discount: disc,
-        total: tot,
-        payment_method: selectedPayment,
-        payment_status: selectedPayment === 'Cash' ? 'Unpaid' : 'Waiting Payment',
-        order_status: 'Pending'
-      };
-
-      const { data, error } = await supabase.from('orders').insert([payload]).select('*').single();
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(orderPayload)
+      });
       
-      if (!error && data) {
-        setActiveTrackingId(data.id);
+      const resData = await res.json();
+      if (res.ok) {
+        setActiveTrackingId(resData.id);
         setCart([]);
         setAppliedVoucher(null);
         setVoucherCode('');
@@ -493,12 +381,10 @@ export default function App() {
           fetchOrdersAndReports();
         }, 1200);
       } else {
-        alert(error?.message || 'Gagal membuat pesanan');
-        console.error(error);
+        alert(resData.error || 'Gagal membuat pesanan');
         setIsProcessingPayment(false);
       }
     } catch (e) {
-      console.error(e);
       alert('Koneksi backend gagal');
       setIsProcessingPayment(false);
     }
@@ -506,23 +392,18 @@ export default function App() {
 
   const updateOrderStatus = async (orderId: string, statusObj: { orderStatus?: OrderStatus, paymentStatus?: PaymentStatus, rating?: number, review?: string }) => {
     try {
-      const payload: any = {};
-      if (statusObj.orderStatus) payload.order_status = statusObj.orderStatus;
-      if (statusObj.paymentStatus) payload.payment_status = statusObj.paymentStatus;
-      if (statusObj.rating !== undefined) payload.rating = statusObj.rating;
-      if (statusObj.review !== undefined) payload.review = statusObj.review;
-      
-      const { error } = await supabase.from('orders').update(payload).eq('id', orderId);
-
-      if (!error) {
+      const res = await fetch(`/api/orders/${orderId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(statusObj)
+      });
+      if (res.ok) {
         fetchOrdersAndReports();
         if (statusObj.rating !== undefined) {
           alert('Ulasan rasa diunggah! Terima kasih.');
           setRatingVal(5);
           setReviewTxt('');
         }
-      } else {
-        console.error("Gagal update order: ", error);
       }
     } catch (e) {
       console.error(e);
@@ -530,8 +411,11 @@ export default function App() {
   };
 
   const handleResetDatabase = async () => {
-    if (confirm('Fungsi ini dinonaktifkan untuk Supabase mode.')) {
-      // no-op
+    if (confirm('Riset data simulasi ke setelan default cafe?')) {
+      await fetch('/api/reset', { method: 'POST' });
+      fetchMenus();
+      fetchOrdersAndReports();
+      setActiveTrackingId(null);
     }
   };
 
@@ -619,15 +503,16 @@ export default function App() {
     setIsSyncingSheets(true);
     try {
       const importedProducts = await importMenusFromSheet(googleAccessToken, googleSpreadsheetId);
-      
-      // Delete old products and insert new ones
-      const { error: delError } = await supabase.from('products').delete().neq('id', '0'); // deletes all
-      if (delError) throw delError;
-
-      const { error: insError } = await supabase.from('products').insert(importedProducts);
-      if (insError) throw insError;
-
-      fetchMenus();
+      const res = await fetch('/api/menus', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(importedProducts)
+      });
+      if (!res.ok) {
+        throw new Error('Gagal menyimpan menu hasil impor ke server cafe.');
+      }
+      const finalProducts = await res.json();
+      setProducts(finalProducts);
       alert(`Sinkronisasi Berhasil! Berhasil mengimpor ${importedProducts.length} produk dari Google Sheets.`);
     } catch (e: any) {
       alert(`Gagal impor menu: ${e.message}`);
@@ -657,21 +542,17 @@ export default function App() {
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const newProduct = {
-        name: newMenuForm.name,
-        category: newMenuForm.category,
-        price: Number(newMenuForm.price),
-        description: newMenuForm.description,
-        image: newMenuForm.image,
-        stock: Number(newMenuForm.stock),
-        isPopular: newMenuForm.isPopular,
-        isPromo: newMenuForm.isPromo
-      };
-      const { error } = await supabase.from('products').insert([newProduct]);
-      if (error) {
-        console.error("Supabase Insert Product Error:", error);
-        alert(`Gagal menambahkan menu: ${error.message}`);
-      } else {
+      const res = await fetch('/api/menus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...newMenuForm,
+          price: Number(newMenuForm.price),
+          stock: Number(newMenuForm.stock)
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
         setNewMenuForm({
           name: '',
           category: 'Coffee',
@@ -685,17 +566,22 @@ export default function App() {
         fetchMenus();
         fetchOrdersAndReports();
         alert('Menu kuliner berhasil disimpan!');
+      } else {
+        alert(data.error || 'Gagal menambahkan menu. Silakan periksa kembali data Anda.');
       }
     } catch (e) {
-      console.error("Jaringan/Unknown Error:", e);
+      console.error(e);
       alert('Terjadi kesalahan jaringan saat menyimpan menu.');
     }
   };
 
   const handleUpdateStock = async (id: string, nextStock: number) => {
     try {
-      const { error } = await supabase.from('products').update({ stock: nextStock }).eq('id', id);
-      if (error) console.error("Update stock error:", error);
+      await fetch(`/api/menus/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stock: nextStock })
+      });
       fetchMenus();
     } catch (e) {
       console.error(e);
@@ -704,8 +590,7 @@ export default function App() {
 
   const handleDeleteProduct = async (id: string) => {
     if (confirm('Hapus item menu ini?')) {
-      const { error } = await supabase.from('products').delete().eq('id', id);
-      if (error) console.error("Delete product error:", error);
+      await fetch(`/api/menus/${id}`, { method: 'DELETE' });
       fetchMenus();
     }
   };
@@ -714,30 +599,30 @@ export default function App() {
     e.preventDefault();
     if (!editingProduct) return;
     try {
-      const updatedProduct = {
-        name: editingProduct.name,
-        category: editingProduct.category,
-        price: Number(editingProduct.price),
-        description: editingProduct.description,
-        image: editingProduct.image,
-        stock: Number(editingProduct.stock),
-        originalPrice: editingProduct.originalPrice,
-        isPopular: !!editingProduct.isPopular,
-        isPromo: !!editingProduct.isPromo
-      };
-      const { error } = await supabase.from('products').update(updatedProduct).eq('id', editingProduct.id);
-      
-      if (!error) {
+      const res = await fetch(`/api/menus/${editingProduct.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editingProduct.name,
+          category: editingProduct.category,
+          price: Number(editingProduct.price),
+          description: editingProduct.description,
+          image: editingProduct.image,
+          stock: Number(editingProduct.stock),
+          isPopular: !!editingProduct.isPopular,
+          isPromo: !!editingProduct.isPromo
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
         setEditingProduct(null);
         fetchMenus();
         alert('Menu kuliner berhasil diperbarui!');
       } else {
-        console.error("Supabase Update Product Error:", error);
-        alert(`Gagal update menu: ${error.message}`);
+        alert(data.error || 'Gagal memperbarui menu');
       }
     } catch (e) {
       console.error(e);
-      alert('Terjadi kesalahan jaringan saat mengupdate menu.');
     }
   };
 
@@ -764,16 +649,19 @@ export default function App() {
   const handleAddVoucher = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const newVoucher = {
-        code: newVoucherForm.code,
-        discountPercentage: Number(newVoucherForm.discountPercentage),
-        maxDiscount: Number(newVoucherForm.maxDiscount) || 10000,
-        minTransaction: Number(newVoucherForm.minTransaction) || 0,
-        description: newVoucherForm.description
-      };
-      
-      const { error } = await supabase.from('vouchers').insert([newVoucher]);
-      if (!error) {
+      const res = await fetch('/api/vouchers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: newVoucherForm.code,
+          discountPercentage: Number(newVoucherForm.discountPercentage),
+          maxDiscount: Number(newVoucherForm.maxDiscount) || 10000,
+          minTransaction: Number(newVoucherForm.minTransaction) || 0,
+          description: newVoucherForm.description
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
         setNewVoucherForm({
           code: '',
           discountPercentage: '',
@@ -784,7 +672,7 @@ export default function App() {
         fetchVouchers();
         alert('Voucher baru berhasil disimpan!');
       } else {
-        alert(error.message || 'Gagal menambahkan voucher');
+        alert(data.error || 'Gagal menambahkan voucher');
       }
     } catch (e) {
       console.error(e);
@@ -795,21 +683,23 @@ export default function App() {
     e.preventDefault();
     if (!editingVoucher) return;
     try {
-      const updatedVoucher = {
-        discountPercentage: Number(editingVoucher.discountPercentage),
-        maxDiscount: Number(editingVoucher.maxDiscount),
-        minTransaction: Number(editingVoucher.minTransaction),
-        description: editingVoucher.description
-      };
-
-      const { error } = await supabase.from('vouchers').update(updatedVoucher).eq('code', editingVoucher.code);
-      
-      if (!error) {
+      const res = await fetch(`/api/vouchers/${editingVoucher.code}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          discountPercentage: Number(editingVoucher.discountPercentage),
+          maxDiscount: Number(editingVoucher.maxDiscount),
+          minTransaction: Number(editingVoucher.minTransaction),
+          description: editingVoucher.description
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
         setEditingVoucher(null);
         fetchVouchers();
         alert('Voucher berhasil diperbarui!');
       } else {
-        alert(error.message || 'Gagal memperbarui voucher');
+        alert(data.error || 'Gagal memperbarui voucher');
       }
     } catch (e) {
       console.error(e);
@@ -819,12 +709,15 @@ export default function App() {
   const handleDeleteVoucher = async (code: string) => {
     if (confirm(`Hapus voucher ${code}?`)) {
       try {
-        const { error } = await supabase.from('vouchers').delete().eq('code', code);
-        if (!error) {
+        const res = await fetch(`/api/vouchers/${code}`, {
+          method: 'DELETE'
+        });
+        if (res.ok) {
           fetchVouchers();
           alert('Voucher berhasil dihapus!');
         } else {
-          alert(error.message || 'Gagal menghapus voucher');
+          const data = await res.json();
+          alert(data.error || 'Gagal menghapus voucher');
         }
       } catch (e) {
         console.error(e);
@@ -1032,7 +925,7 @@ export default function App() {
             <span><strong>DAPUR REAL-TIME:</strong> {notifications[0].message}</span>
           </div>
           <button 
-            onClick={() => setNotifications([])}
+            onClick={async () => { await fetch('/api/notifications/clear', { method: 'POST' }); fetchOrdersAndReports(); }}
             className="underline font-bold text-[9px] uppercase cursor-pointer"
           >
             Clear
