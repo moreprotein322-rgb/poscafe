@@ -27,7 +27,7 @@ import {
   Share2
 } from 'lucide-react';
 import { Product, Order, OrderItem, MenuCategory, DeliveryType, PaymentMethod, OrderStatus, PaymentStatus, Table, Voucher, Review } from './types';
-import { verifyConnection } from './supabaseClient';
+import { verifyConnection, dbRead, dbInsert, dbUpdate, dbDelete } from './supabaseClient';
 import {
   initAuth,
   googleSignIn,
@@ -128,9 +128,8 @@ export default function App() {
 
   const fetchMenus = async () => {
     try {
-      const res = await fetch('/api/menus');
-      const data = await res.json();
-      setProducts(data);
+      const data = await dbRead('menus');
+      setProducts(data || []);
     } catch (e) {
       console.error(e);
     }
@@ -138,9 +137,8 @@ export default function App() {
 
   const fetchOrdersAndReports = async () => {
     try {
-      const resOrders = await fetch('/api/orders');
-      const ordersData = await resOrders.json();
-      setOrderHistory(ordersData);
+      const ordersData = await dbRead('orders');
+      setOrderHistory(ordersData || []);
 
       const resReports = await fetch('/api/reports');
       const reports = await resReports.json();
@@ -156,8 +154,7 @@ export default function App() {
 
   const fetchVouchers = async () => {
     try {
-      const res = await fetch('/api/vouchers');
-      const data = await res.json();
+      const data = await dbRead('vouchers');
       setVouchers(data || []);
     } catch (e) {
       console.error(e);
@@ -363,15 +360,9 @@ export default function App() {
     };
 
     try {
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderPayload)
-      });
-      
-      const resData = await res.json();
-      if (res.ok) {
-        setActiveTrackingId(resData.id);
+      const insertedData = await dbInsert('orders', orderPayload);
+      if (insertedData && insertedData.length > 0) {
+        setActiveTrackingId(insertedData[0].id);
         setCart([]);
         setAppliedVoucher(null);
         setVoucherCode('');
@@ -381,7 +372,7 @@ export default function App() {
           fetchOrdersAndReports();
         }, 1200);
       } else {
-        alert(resData.error || 'Gagal membuat pesanan');
+        alert('Gagal membuat pesanan');
         setIsProcessingPayment(false);
       }
     } catch (e) {
@@ -392,18 +383,12 @@ export default function App() {
 
   const updateOrderStatus = async (orderId: string, statusObj: { orderStatus?: OrderStatus, paymentStatus?: PaymentStatus, rating?: number, review?: string }) => {
     try {
-      const res = await fetch(`/api/orders/${orderId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(statusObj)
-      });
-      if (res.ok) {
-        fetchOrdersAndReports();
-        if (statusObj.rating !== undefined) {
-          alert('Ulasan rasa diunggah! Terima kasih.');
-          setRatingVal(5);
-          setReviewTxt('');
-        }
+      await dbUpdate('orders', statusObj, { id: orderId });
+      fetchOrdersAndReports();
+      if (statusObj.rating !== undefined) {
+        alert('Ulasan rasa diunggah! Terima kasih.');
+        setRatingVal(5);
+        setReviewTxt('');
       }
     } catch (e) {
       console.error(e);
@@ -503,16 +488,17 @@ export default function App() {
     setIsSyncingSheets(true);
     try {
       const importedProducts = await importMenusFromSheet(googleAccessToken, googleSpreadsheetId);
-      const res = await fetch('/api/menus', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(importedProducts)
-      });
-      if (!res.ok) {
-        throw new Error('Gagal menyimpan menu hasil impor ke server cafe.');
+      
+      // Delete existing and insert new
+      await dbDelete('menus', {}); // Assuming we can do broad deletes this way, or we'd just use supabase directly.
+      const { supabase } = await import('./supabaseClient');
+      await supabase.from('menus').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all rows
+      
+      if (importedProducts.length > 0) {
+        await supabase.from('menus').insert(importedProducts);
       }
-      const finalProducts = await res.json();
-      setProducts(finalProducts);
+      const data = await dbRead('menus');
+      setProducts(data || []);
       alert(`Sinkronisasi Berhasil! Berhasil mengimpor ${importedProducts.length} produk dari Google Sheets.`);
     } catch (e: any) {
       alert(`Gagal impor menu: ${e.message}`);
@@ -542,17 +528,14 @@ export default function App() {
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/menus', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...newMenuForm,
-          price: Number(newMenuForm.price),
-          stock: Number(newMenuForm.stock)
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
+      const payload = {
+        ...newMenuForm,
+        price: Number(newMenuForm.price),
+        stock: Number(newMenuForm.stock)
+      };
+      const inserted = await dbInsert('menus', payload);
+      
+      if (inserted) {
         setNewMenuForm({
           name: '',
           category: 'Coffee',
@@ -567,7 +550,7 @@ export default function App() {
         fetchOrdersAndReports();
         alert('Menu kuliner berhasil disimpan!');
       } else {
-        alert(data.error || 'Gagal menambahkan menu. Silakan periksa kembali data Anda.');
+        alert('Gagal menambahkan menu. Silakan periksa kembali data Anda.');
       }
     } catch (e) {
       console.error(e);
@@ -577,11 +560,7 @@ export default function App() {
 
   const handleUpdateStock = async (id: string, nextStock: number) => {
     try {
-      await fetch(`/api/menus/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stock: nextStock })
-      });
+      await dbUpdate('menus', { stock: nextStock }, { id });
       fetchMenus();
     } catch (e) {
       console.error(e);
@@ -590,7 +569,7 @@ export default function App() {
 
   const handleDeleteProduct = async (id: string) => {
     if (confirm('Hapus item menu ini?')) {
-      await fetch(`/api/menus/${id}`, { method: 'DELETE' });
+      await dbDelete('menus', { id });
       fetchMenus();
     }
   };
@@ -599,30 +578,24 @@ export default function App() {
     e.preventDefault();
     if (!editingProduct) return;
     try {
-      const res = await fetch(`/api/menus/${editingProduct.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: editingProduct.name,
-          category: editingProduct.category,
-          price: Number(editingProduct.price),
-          description: editingProduct.description,
-          image: editingProduct.image,
-          stock: Number(editingProduct.stock),
-          isPopular: !!editingProduct.isPopular,
-          isPromo: !!editingProduct.isPromo
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setEditingProduct(null);
-        fetchMenus();
-        alert('Menu kuliner berhasil diperbarui!');
-      } else {
-        alert(data.error || 'Gagal memperbarui menu');
-      }
+      const payload = {
+        name: editingProduct.name,
+        category: editingProduct.category,
+        price: Number(editingProduct.price),
+        description: editingProduct.description,
+        image: editingProduct.image,
+        stock: Number(editingProduct.stock),
+        isPopular: !!editingProduct.isPopular,
+        isPromo: !!editingProduct.isPromo
+      };
+      
+      await dbUpdate('menus', payload, { id: editingProduct.id });
+      setEditingProduct(null);
+      fetchMenus();
+      alert('Menu kuliner berhasil diperbarui!');
     } catch (e) {
       console.error(e);
+      alert('Gagal memperbarui menu');
     }
   };
 
@@ -649,19 +622,16 @@ export default function App() {
   const handleAddVoucher = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/vouchers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: newVoucherForm.code,
-          discountPercentage: Number(newVoucherForm.discountPercentage),
-          maxDiscount: Number(newVoucherForm.maxDiscount) || 10000,
-          minTransaction: Number(newVoucherForm.minTransaction) || 0,
-          description: newVoucherForm.description
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
+      const payload = {
+        code: newVoucherForm.code,
+        discountPercentage: Number(newVoucherForm.discountPercentage),
+        maxDiscount: Number(newVoucherForm.maxDiscount) || 10000,
+        minTransaction: Number(newVoucherForm.minTransaction) || 0,
+        description: newVoucherForm.description
+      };
+      
+      const inserted = await dbInsert('vouchers', payload);
+      if (inserted) {
         setNewVoucherForm({
           code: '',
           discountPercentage: '',
@@ -672,10 +642,11 @@ export default function App() {
         fetchVouchers();
         alert('Voucher baru berhasil disimpan!');
       } else {
-        alert(data.error || 'Gagal menambahkan voucher');
+        alert('Gagal menambahkan voucher');
       }
     } catch (e) {
       console.error(e);
+      alert('Gagal menambahkan voucher');
     }
   };
 
@@ -683,44 +654,31 @@ export default function App() {
     e.preventDefault();
     if (!editingVoucher) return;
     try {
-      const res = await fetch(`/api/vouchers/${editingVoucher.code}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          discountPercentage: Number(editingVoucher.discountPercentage),
-          maxDiscount: Number(editingVoucher.maxDiscount),
-          minTransaction: Number(editingVoucher.minTransaction),
-          description: editingVoucher.description
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setEditingVoucher(null);
-        fetchVouchers();
-        alert('Voucher berhasil diperbarui!');
-      } else {
-        alert(data.error || 'Gagal memperbarui voucher');
-      }
+      const payload = {
+        discountPercentage: Number(editingVoucher.discountPercentage),
+        maxDiscount: Number(editingVoucher.maxDiscount),
+        minTransaction: Number(editingVoucher.minTransaction),
+        description: editingVoucher.description
+      };
+      await dbUpdate('vouchers', payload, { code: editingVoucher.code });
+      setEditingVoucher(null);
+      fetchVouchers();
+      alert('Voucher berhasil diperbarui!');
     } catch (e) {
       console.error(e);
+      alert('Gagal memperbarui voucher');
     }
   };
 
   const handleDeleteVoucher = async (code: string) => {
     if (confirm(`Hapus voucher ${code}?`)) {
       try {
-        const res = await fetch(`/api/vouchers/${code}`, {
-          method: 'DELETE'
-        });
-        if (res.ok) {
-          fetchVouchers();
-          alert('Voucher berhasil dihapus!');
-        } else {
-          const data = await res.json();
-          alert(data.error || 'Gagal menghapus voucher');
-        }
+        await dbDelete('vouchers', { code });
+        fetchVouchers();
+        alert('Voucher berhasil dihapus!');
       } catch (e) {
         console.error(e);
+        alert('Gagal menghapus voucher');
       }
     }
   };
