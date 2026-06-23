@@ -56,6 +56,10 @@ export default function App() {
 
   // Customer Catalog & Local state
   const [products, setProducts] = useState<Product[]>([]);
+  const [stockLogs, setStockLogs] = useState<any[]>([]);
+  const [waiterCalls, setWaiterCalls] = useState<any[]>([]);
+  const [stockForm, setStockForm] = useState({ productId: '', type: 'IN', quantity: '', notes: '' });
+  const [isCallingWaiter, setIsCallingWaiter] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<MenuCategory | 'All'>('All');
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -79,7 +83,9 @@ export default function App() {
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   // Admin tabs & edit fields
-  const [adminActiveTab, setAdminActiveTab] = useState<'menus' | 'vouchers' | 'reports' | 'sheets'>('menus');
+  const [adminActiveTab, setAdminActiveTab] = useState<'menus' | 'vouchers' | 'reports' | 'sheets' | 'settings' | 'stock'>('menus');
+  const [globalPin, setGlobalPin] = useState('0000');
+  const [pinForm, setPinForm] = useState({ current: '', new: '', confirm: '' });
   const [googleUser, setGoogleUser] = useState<any>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [googleSpreadsheetId, setGoogleSpreadsheetId] = useState<string>(() => localStorage.getItem('google_spreadsheet_id') || '');
@@ -91,7 +97,6 @@ export default function App() {
   const [newVoucherForm, setNewVoucherForm] = useState({
     code: '',
     discountPercentage: '',
-    maxDiscount: '',
     minTransaction: '',
     description: ''
   });
@@ -124,6 +129,23 @@ export default function App() {
       setCurrentTableNum(tableParam);
       setDeliveryType('Diantar ke Meja');
     }
+
+    const loadSettings = async () => {
+      try {
+        const { supabase } = await import('./supabaseClient');
+        const { data, error } = await supabase.from('settings').select('value').eq('key', 'admin_pin').single();
+        if (data && data.value) {
+          setGlobalPin(data.value);
+        } else {
+          // Initialize if not exists
+          await supabase.from('settings').insert({ key: 'admin_pin', value: '0000' });
+          setGlobalPin('0000');
+        }
+      } catch (e) {
+        console.error('Settings table missing or error', e);
+      }
+    };
+    loadSettings();
   }, []);
 
   const fetchMenus = async () => {
@@ -137,16 +159,86 @@ export default function App() {
 
   const fetchOrdersAndReports = async () => {
     try {
-      const ordersData = await dbRead('orders');
-      setOrderHistory(ordersData || []);
+      const { supabase } = await import('./supabaseClient');
+      const { data: rawOrders, error: ordersError } = await supabase.from('orders').select('*, order_items(*)').order('createdAt', { ascending: false });
+      if (ordersError) throw ordersError;
 
-      const resReports = await fetch('/api/reports');
-      const reports = await resReports.json();
-      setReportData(reports);
+      const formattedOrders = (rawOrders || []).map((o: any) => ({
+        ...o,
+        items: o.order_items || []
+      }));
+      setOrderHistory(formattedOrders);
 
-      const resNotif = await fetch('/api/notifications');
-      const notifs = await resNotif.json();
-      setNotifications(notifs);
+      // Calculate Reports
+      const completedOrders = formattedOrders.filter(o => o.orderStatus !== 'Cancelled');
+      const totalOmzet = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.grandTotal) : 0), 0);
+      const totalWaitressFee = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.waitressFee) : 0), 0);
+      const subtotalOmzet = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.subtotal) : 0), 0);
+
+      const salesByDay: Record<string, number> = {};
+      const feesByDay: Record<string, number> = {};
+      const dates = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        return d.toISOString().split('T')[0];
+      }).reverse();
+
+      dates.forEach(d => {
+        salesByDay[d] = 0;
+        feesByDay[d] = 0;
+      });
+
+      completedOrders.forEach(o => {
+        if (o.paymentStatus === 'Paid' && o.createdAt) {
+          const dateStr = o.createdAt.split('T')[0];
+          if (salesByDay[dateStr] !== undefined) {
+            salesByDay[dateStr] += Number(o.grandTotal);
+            feesByDay[dateStr] += Number(o.waitressFee);
+          }
+        }
+      });
+
+      const reportDaily = dates.map(d => ({
+        date: d,
+        omzet: salesByDay[d],
+        fees: feesByDay[d]
+      }));
+
+      const itemsMap: Record<string, { name: string; category: string; quantity: number; revenue: number }> = {};
+      
+      completedOrders.forEach(o => {
+        if (o.paymentStatus === 'Paid') {
+          o.items.forEach((item: any) => {
+            if (!itemsMap[item.productId]) {
+              itemsMap[item.productId] = {
+                name: item.name,
+                category: 'Produk', // Simplified since we don't join products here
+                quantity: 0,
+                revenue: 0
+              };
+            }
+            itemsMap[item.productId].quantity += Number(item.quantity);
+            itemsMap[item.productId].revenue += Number(item.price) * Number(item.quantity);
+          });
+        }
+      });
+
+      const bestSellers = Object.values(itemsMap).sort((a: any, b: any) => b.quantity - a.quantity);
+
+      setReportData({
+        totalOmzet,
+        totalWaitressFee,
+        subtotalOmzet,
+        dailySales: reportDaily,
+        bestSellers,
+        logs: [],
+        totalOrdersCount: formattedOrders.length,
+        unpaidCount: formattedOrders.filter(o => o.paymentStatus === 'Unpaid').length,
+        preparingCount: formattedOrders.filter(o => o.orderStatus === 'Preparing').length,
+        readyCount: formattedOrders.filter(o => o.orderStatus === 'Ready').length
+      });
+
+      setNotifications([]);
     } catch (e) {
       console.error(e);
     }
@@ -161,17 +253,74 @@ export default function App() {
     }
   };
 
+  const fetchStockLogs = async () => {
+    try {
+      const { supabase } = await import('./supabaseClient');
+      const { data, error } = await supabase.from('stock_logs').select('*, products(name)').order('createdAt', { ascending: false }).limit(50);
+      if (!error) setStockLogs(data || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchWaiterCalls = async () => {
+    try {
+      const { supabase } = await import('./supabaseClient');
+      const { data, error } = await supabase.from('waiter_calls').select('*').order('createdAt', { ascending: false });
+      if (!error) setWaiterCalls(data || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     fetchMenus();
     fetchOrdersAndReports();
     fetchVouchers();
+    fetchStockLogs();
+    fetchWaiterCalls();
 
-    // Setup polling every 4 seconds
+    let channel: any;
+    const setupRealtime = async () => {
+      const { supabase } = await import('./supabaseClient');
+      channel = supabase.channel('schema-db-changes')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+          fetchOrdersAndReports();
+          if (payload.eventType === 'UPDATE' && payload.new.orderStatus === 'Ready' && payload.old.orderStatus !== 'Ready') {
+             // Let a global document state handle it or just rely on the UI polling
+             const currentTrackingStr = localStorage.getItem('activeTrackingId');
+             if (currentTrackingStr === payload.new.id) {
+                const beep = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+                beep.play().catch(e => console.error(e));
+                alert(`☕ Your order is ready for pickup.\nOrder #: ${payload.new.shortId}\nPlease collect your order at the pickup counter.`);
+             }
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'waiter_calls' }, (payload) => {
+          fetchWaiterCalls();
+          if (payload.eventType === 'INSERT' && payload.new.status === 'Waiting' && ['Kasir', 'Admin'].includes(activeRole)) {
+            const beep = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+            beep.play().catch(e => console.error(e));
+            alert(`Pangggilan Pelayan dari Meja ${payload.new.tableNumber}`);
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+          fetchMenus();
+        })
+        .subscribe();
+    }
+    setupRealtime();
+
+    // Setup polling every 4 seconds as fallback
     const timer = setInterval(() => {
       fetchOrdersAndReports();
+      fetchWaiterCalls();
     }, 4000);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      if (channel) channel.unsubscribe();
+    }
   }, []);
 
   useEffect(() => {
@@ -242,7 +391,7 @@ export default function App() {
       setPinInput(nextPin);
       
       // Automatic verify if length reaches 4
-      if (nextPin === '0000') {
+      if (nextPin === globalPin) {
         if (pendingRole) {
           setActiveRole(pendingRole);
           if (pendingRole !== 'Admin') {
@@ -252,7 +401,7 @@ export default function App() {
         setIsPinModalOpen(false);
         setPinInput('');
       } else if (nextPin.length === 4) {
-        setPinError('PIN salah! Gunakan PIN default 0000.');
+        setPinError('PIN salah! Silakan coba lagi.');
         setTimeout(() => {
           setPinInput('');
         }, 1200);
@@ -293,7 +442,7 @@ export default function App() {
 
     if (v) {
       const sub = getSubtotal();
-      if (sub < v.minTransaction) {
+      if (v.minTransaction && sub < v.minTransaction) {
         setVoucherError(`Minimum Rp${v.minTransaction.toLocaleString('id-ID')} untuk kupon ini.`);
         setAppliedVoucher(null);
       } else {
@@ -312,7 +461,7 @@ export default function App() {
     const v = vouchers.find(x => x.code === code);
     if (v) {
       const sub = getSubtotal();
-      if (sub < v.minTransaction) {
+      if (v.minTransaction && sub < v.minTransaction) {
         setVoucherError(`Minimum Rp${v.minTransaction.toLocaleString('id-ID')} untuk kupon ini.`);
         setAppliedVoucher(null);
       } else {
@@ -329,7 +478,7 @@ export default function App() {
   const getDiscount = () => {
     if (!appliedVoucher) return 0;
     const sub = getSubtotal();
-    return Math.min((sub * appliedVoucher.discountPercentage) / 100, appliedVoucher.maxDiscount);
+    return (sub * appliedVoucher.discountPercentage) / 100;
   };
 
   const getGrandTotal = () => getSubtotal() + getWaitressFee() - getDiscount();
@@ -360,12 +509,40 @@ export default function App() {
     };
 
     try {
-      const insertedData = await dbInsert('orders', orderPayload);
-      if (insertedData && insertedData.length > 0) {
-        setActiveTrackingId(insertedData[0].id);
+      const { items, ...orderData } = orderPayload;
+      // Add shortId
+      orderData.shortId = `A${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+      orderData.paymentStatus = (selectedPayment === 'Cash' || !selectedPayment) ? 'Unpaid' : 'Waiting Payment';
+      orderData.orderStatus = 'Pending';
+      
+      const { supabase } = await import('./supabaseClient');
+      const { data: insertedOrder, error: orderError } = await supabase.from('orders').insert(orderData).select();
+      
+      if (orderError) throw orderError;
+      
+      if (insertedOrder && insertedOrder.length > 0) {
+        const newOrderId = insertedOrder[0].id;
+        
+        // Insert items
+        if (items && items.length > 0) {
+          const orderItems = items.map((it: any) => ({
+            orderId: newOrderId,
+            productId: it.productId,
+            name: it.name,
+            price: it.price,
+            quantity: it.quantity,
+            notes: it.notes
+          }));
+          const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
+          if (itemsError) throw itemsError;
+        }
+
+        setActiveTrackingId(newOrderId);
+        localStorage.setItem('activeTrackingId', newOrderId);
         setCart([]);
         setAppliedVoucher(null);
         setVoucherCode('');
+
         setTimeout(() => {
           setIsProcessingPayment(false);
           setIsCheckoutOpen(false);
@@ -376,31 +553,111 @@ export default function App() {
         setIsProcessingPayment(false);
       }
     } catch (e) {
-      alert('Koneksi backend gagal');
+      console.error(e);
+      alert('Koneksi backend atau format pesanan gagal');
       setIsProcessingPayment(false);
     }
   };
 
   const updateOrderStatus = async (orderId: string, statusObj: { orderStatus?: OrderStatus, paymentStatus?: PaymentStatus, rating?: number, review?: string }) => {
     try {
+      const { supabase } = await import('./supabaseClient');
+
+      // Check if marking as Paid for the first time
+      if (statusObj.paymentStatus === 'Paid') {
+        const order = orderHistory.find(o => o.id === orderId);
+        if (order && order.paymentStatus !== 'Paid') {
+          // Reduce stock & log
+          for (const item of order.items) {
+             const { data: p } = await supabase.from('products').select('stock').eq('id', item.productId).single();
+             if (p) {
+               await supabase.from('products').update({ stock: Math.max(0, p.stock - item.quantity) }).eq('id', item.productId);
+               await supabase.from('stock_logs').insert({ productId: item.productId, type: 'OUT', quantity: item.quantity, notes: `Order Paid #${order.shortId}` });
+             }
+          }
+        }
+      }
+
       await dbUpdate('orders', statusObj, { id: orderId });
       fetchOrdersAndReports();
+      fetchStockLogs();
+      fetchMenus();
+
       if (statusObj.rating !== undefined) {
         alert('Ulasan rasa diunggah! Terima kasih.');
         setRatingVal(5);
         setReviewTxt('');
+      }
+      
+      // Notification sound for customer if Ready
+      if (statusObj.orderStatus === 'Ready') {
+         // This runs for all clients watching, but sound will only be helpful if we are that customer or global
+         // For now, simple beep
+         const beep = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+         beep.play().catch(e => console.error(e));
       }
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleResetDatabase = async () => {
-    if (confirm('Riset data simulasi ke setelan default cafe?')) {
-      await fetch('/api/reset', { method: 'POST' });
+  const handleCallWaiter = async () => {
+    if (isCallingWaiter) return;
+    
+    // Check spam
+    const lastCallTime = localStorage.getItem('last_waiter_call');
+    if (lastCallTime && new Date().getTime() - Number(lastCallTime) < 120000) {
+      alert('Mohon waktu 2 menit sejak panggilan terakhir. Staf kami sedang meluncur ke meja Anda.');
+      return;
+    }
+
+    if (confirm('Panggil pelayan ke meja Anda sekarang?')) {
+      setIsCallingWaiter(true);
+      try {
+        const { supabase } = await import('./supabaseClient');
+        const { error } = await supabase.from('waiter_calls').insert({ tableNumber: currentTableNum, status: 'Waiting' });
+        if (!error) {
+          localStorage.setItem('last_waiter_call', new Date().getTime().toString());
+          alert('Berhasil! Pelayan sedang dalam perjalanan ke meja Anda.');
+        } else {
+          alert('Gagal memanggil pelayan.');
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsCallingWaiter(false);
+      }
+    }
+  };
+
+  const handleStockAdjust = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const qty = Number(stockForm.quantity);
+    if (!stockForm.productId || qty <= 0) return;
+    const p = products.find(prod => prod.id === stockForm.productId);
+    if (!p) return;
+    try {
+      const { supabase } = await import('./supabaseClient');
+      let newStock = p.stock;
+      if (stockForm.type === 'IN') newStock += qty;
+      else if (stockForm.type === 'OUT') newStock = Math.max(0, newStock - qty);
+      
+      await supabase.from('products').update({ stock: newStock }).eq('id', p.id);
+      await supabase.from('stock_logs').insert({ productId: p.id, type: stockForm.type, quantity: qty, notes: stockForm.notes });
+      
       fetchMenus();
-      fetchOrdersAndReports();
-      setActiveTrackingId(null);
+      fetchStockLogs();
+      setStockForm({ productId: '', type: 'IN', quantity: '', notes: '' });
+      alert('Stok berhasil diperbarui ✅');
+    } catch (err) {
+      console.error(err);
+      alert('Gagal memperbarui stok.');
+    }
+  };
+
+  const handleResetDatabase = async () => {
+    if (confirm('Riset data database Supabase tidak diizinkan dari Frontend.')) {
+      alert('Tindakan ini tidak bisa dilakukan langsung dari browser.');
     }
   };
 
@@ -625,8 +882,7 @@ export default function App() {
       const payload = {
         code: newVoucherForm.code,
         discountPercentage: Number(newVoucherForm.discountPercentage),
-        maxDiscount: Number(newVoucherForm.maxDiscount) || 10000,
-        minTransaction: Number(newVoucherForm.minTransaction) || 0,
+        minTransaction: newVoucherForm.minTransaction ? Number(newVoucherForm.minTransaction) : null,
         description: newVoucherForm.description
       };
       
@@ -635,7 +891,6 @@ export default function App() {
         setNewVoucherForm({
           code: '',
           discountPercentage: '',
-          maxDiscount: '',
           minTransaction: '',
           description: ''
         });
@@ -656,8 +911,7 @@ export default function App() {
     try {
       const payload = {
         discountPercentage: Number(editingVoucher.discountPercentage),
-        maxDiscount: Number(editingVoucher.maxDiscount),
-        minTransaction: Number(editingVoucher.minTransaction),
+        minTransaction: editingVoucher.minTransaction ? Number(editingVoucher.minTransaction) : null,
         description: editingVoucher.description
       };
       await dbUpdate('vouchers', payload, { code: editingVoucher.code });
@@ -775,9 +1029,20 @@ export default function App() {
             </button>
           </div>
         ) : (
-          /* Silent placeholder so that center looks symmetric */
-          <div className="hidden md:block text-[11px] text-stone-500 italic font-mono uppercase tracking-widest bg-stone-950 px-4 py-1.5 rounded-full border border-white/5 shadow-inner">
-            E-Menu Mandiri Meja {currentTableNum}
+          /* Customer Call Waiter Button */
+          <div className="hidden md:flex items-center gap-3">
+            <div className="text-[11px] text-stone-500 italic font-mono uppercase tracking-widest bg-stone-950 px-4 py-1.5 rounded-full border border-white/5 shadow-inner">
+              E-Menu Mandiri Meja {currentTableNum}
+            </div>
+            {deliveryType === 'Diantar ke Meja' && (
+              <button
+                onClick={handleCallWaiter}
+                disabled={isCallingWaiter}
+                className="bg-[#C8A97E] text-slate-950 px-4 py-1.5 rounded-full text-xs font-bold font-mono hover:bg-[#b5966b] transition cursor-pointer disabled:opacity-50 animate-pulse-slow"
+              >
+                🔔 Panggil Pelayan
+              </button>
+            )}
           </div>
         )}
 
@@ -883,7 +1148,7 @@ export default function App() {
             <span><strong>DAPUR REAL-TIME:</strong> {notifications[0].message}</span>
           </div>
           <button 
-            onClick={async () => { await fetch('/api/notifications/clear', { method: 'POST' }); fetchOrdersAndReports(); }}
+            onClick={() => { setNotifications([]); }}
             className="underline font-bold text-[9px] uppercase cursor-pointer"
           >
             Clear
@@ -1140,10 +1405,10 @@ export default function App() {
                             className={`px-3 py-1 rounded text-[11px] font-bold uppercase tracking-wider transition ${
                               p.stock > 0 
                                 ? 'bg-white/5 hover:bg-[#C8A97E] hover:text-slate-950 border border-white/10 cursor-pointer' 
-                                : 'bg-stone-850 text-stone-600 cursor-not-allowed'
+                                : 'bg-rose-500/10 text-rose-500 cursor-not-allowed'
                             }`}
                           >
-                            + Keranjang
+                            {p.stock > 0 ? '+ Keranjang' : 'HABIS (Out of Stock)'}
                           </button>
                         </div>
                       </div>
@@ -1512,11 +1777,68 @@ export default function App() {
 
               </div>
 
-              {/* SUMMARY BOOK */}
-              <div className="bg-[#161616] p-5 rounded-2xl border border-white/5 space-y-4">
-                <span className="text-xs uppercase font-mono tracking-widest text-[#C8A97E] block font-bold">Riwayat Bayar Lunas</span>
+              {/* SIDEBAR WIDGETS */}
+              <div className="space-y-6">
                 
-                <div className="space-y-2.5 max-h-[500px] overflow-y-auto">
+                {/* WAITER CALLS */}
+                <div className="bg-[#161616] p-5 rounded-2xl border border-white/5 space-y-4">
+                  <span className="text-xs uppercase font-mono tracking-widest text-[#C8A97E] block font-bold flex items-center justify-between">
+                    <span>Panggilan Waiter</span>
+                    {waiterCalls.filter(c => c.status === 'Waiting').length > 0 && (
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                    )}
+                  </span>
+                  
+                  <div className="space-y-2.5 max-h-[300px] overflow-y-auto">
+                    {waiterCalls.filter(c => c.status !== 'Completed').map(c => (
+                      <div key={c.id} className="p-3 bg-[#121212] rounded text-xs items-center font-mono border border-white/5 space-y-2">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="text-white font-bold block">Meja #{c.tableNumber}</span>
+                            <span className="text-[9px] text-stone-500 block">{new Date(c.createdAt).toLocaleTimeString('id-ID')}</span>
+                          </div>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${c.status === 'Waiting' ? 'bg-rose-500/10 text-rose-500 animate-pulse' : 'bg-amber-500/10 text-amber-500'}`}>
+                            {c.status}
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          {c.status === 'Waiting' ? (
+                             <button
+                               onClick={async () => {
+                                  const { supabase } = await import('./supabaseClient');
+                                  await supabase.from('waiter_calls').update({ status: 'Accepted' }).eq('id', c.id);
+                               }}
+                               className="flex-1 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-[10px] cursor-pointer transition"
+                             >
+                               Otw Ke Meja
+                             </button>
+                          ) : (
+                             <button
+                               onClick={async () => {
+                                  const { supabase } = await import('./supabaseClient');
+                                  await supabase.from('waiter_calls').update({ status: 'Completed', completedAt: new Date().toISOString() }).eq('id', c.id);
+                               }}
+                               className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-[10px] cursor-pointer transition"
+                             >
+                               Selesai ✔
+                             </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {waiterCalls.filter(c => c.status !== 'Completed').length === 0 && (
+                      <div className="text-center py-4 text-stone-600 text-[10px] font-mono">
+                        Tidak ada panggilan meja.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* SUMMARY BOOK */}
+                <div className="bg-[#161616] p-5 rounded-2xl border border-white/5 space-y-4">
+                  <span className="text-xs uppercase font-mono tracking-widest text-[#C8A97E] block font-bold">Riwayat Bayar Lunas</span>
+                  
+                  <div className="space-y-2.5 max-h-[500px] overflow-y-auto">
                   {orderHistory.filter(o => o.paymentStatus === 'Paid' || o.orderStatus === 'Completed').map(o => (
                     <div key={o.id} className="p-3 bg-[#121212] rounded text-xs flex justify-between items-center font-mono border border-white/5">
                       <div>
@@ -1534,6 +1856,7 @@ export default function App() {
                 </div>
               </div>
 
+              </div>
             </div>
           </div>
         )}
@@ -1643,6 +1966,22 @@ export default function App() {
                   }`}
                 >
                   🟢 Google Spreadsheet DB
+                </button>
+                <button
+                  onClick={() => setAdminActiveTab('settings')}
+                  className={`px-3 py-1.5 rounded text-xs font-mono cursor-pointer ${
+                    adminActiveTab === 'settings' ? 'bg-[#C8A97E] text-slate-950 font-bold' : 'bg-[#161616] text-stone-300'
+                  }`}
+                >
+                  ⚙⚙ Pengaturan
+                </button>
+                <button
+                  onClick={() => setAdminActiveTab('stock')}
+                  className={`px-3 py-1.5 rounded text-xs font-mono cursor-pointer ${
+                    adminActiveTab === 'stock' ? 'bg-[#C8A97E] text-slate-950 font-bold' : 'bg-[#161616] text-stone-300'
+                  }`}
+                >
+                  📦 Manajemen Stok
                 </button>
               </div>
             </div>
@@ -2040,25 +2379,12 @@ export default function App() {
                         </div>
 
                         <div>
-                          <label className="text-[10px] text-stone-400 block mb-1">Min. Transaksi Belanja (Rp):*</label>
+                          <label className="text-[10px] text-stone-400 block mb-1">Min. Transaksi Belanja (Rp) (Opsional):</label>
                           <input
                             type="number"
-                            required
                             min="0"
-                            value={editingVoucher.minTransaction}
+                            value={editingVoucher.minTransaction || ''}
                             onChange={(e) => setEditingVoucher({ ...editingVoucher, minTransaction: Number(e.target.value) })}
-                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-[10px] text-stone-400 block mb-1">Maks Potongan Rupiah (Rp):*</label>
-                          <input
-                            type="number"
-                            required
-                            min="0"
-                            value={editingVoucher.maxDiscount}
-                            onChange={(e) => setEditingVoucher({ ...editingVoucher, maxDiscount: Number(e.target.value) })}
                             className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
                           />
                         </div>
@@ -2118,27 +2444,13 @@ export default function App() {
                         </div>
 
                         <div>
-                          <label className="text-[10px] text-stone-400 block mb-1">Min. Transaksi Belanja (Rp):*</label>
+                          <label className="text-[10px] text-stone-400 block mb-1">Min. Transaksi Belanja (Rp) (Opsional):</label>
                           <input
                             type="number"
-                            required
                             min="0"
-                            placeholder="30000"
+                            placeholder="Opsional, misal: 30000"
                             value={newVoucherForm.minTransaction}
                             onChange={(e) => setNewVoucherForm({ ...newVoucherForm, minTransaction: e.target.value })}
-                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-[10px] text-stone-400 block mb-1">Maks Potongan Rupiah (Rp):*</label>
-                          <input
-                            type="number"
-                            required
-                            min="0"
-                            placeholder="15000"
-                            value={newVoucherForm.maxDiscount}
-                            onChange={(e) => setNewVoucherForm({ ...newVoucherForm, maxDiscount: e.target.value })}
                             className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
                           />
                         </div>
@@ -2184,9 +2496,7 @@ export default function App() {
                               {item.description}
                             </p>
                             <div className="text-[10px] text-stone-500 font-mono space-x-3">
-                              <span>Min Belanja: Rp{item.minTransaction.toLocaleString('id-ID')}</span>
-                              <span>•</span>
-                              <span>Maks Potongan: Rp{item.maxDiscount.toLocaleString('id-ID')}</span>
+                              <span>Min Belanja: {item.minTransaction ? `Rp${item.minTransaction.toLocaleString('id-ID')}` : 'Tidak ada'}</span>
                             </div>
                           </div>
 
@@ -2526,6 +2836,195 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {adminActiveTab === 'settings' && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="bg-[#161616] border border-white/5 p-6 rounded-2xl space-y-6 max-w-lg">
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-mono font-bold tracking-wider text-[#C8A97E] uppercase block">Pengaturan Akses</span>
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      ⚙️ Ganti PIN Portal
+                    </h3>
+                  </div>
+
+                  <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (pinForm.current !== globalPin) {
+                      alert('PIN saat ini salah.');
+                      return;
+                    }
+                    if (pinForm.new.length !== 4) {
+                      alert('PIN baru harus 4 digit.');
+                      return;
+                    }
+                    if (pinForm.new !== pinForm.confirm) {
+                      alert('Konfirmasi PIN baru tidak cocok.');
+                      return;
+                    }
+                    try {
+                      const { supabase } = await import('./supabaseClient');
+                      await supabase.from('settings').update({ value: pinForm.new }).eq('key', 'admin_pin');
+                      setGlobalPin(pinForm.new);
+                      alert('PIN berhasil diubah!');
+                      setPinForm({ current: '', new: '', confirm: '' });
+                    } catch (err) {
+                      console.error(err);
+                      alert('Terjadi kesalahan, periksa konsol.');
+                    }
+                  }} className="space-y-4">
+                    <div>
+                      <label className="text-[10px] text-stone-400 block mb-1">PIN Saat Ini:</label>
+                      <input
+                        type="password"
+                        maxLength={4}
+                        required
+                        value={pinForm.current}
+                        onChange={(e) => setPinForm({...pinForm, current: e.target.value})}
+                        className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                        placeholder="Masukkan PIN saat ini"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-stone-400 block mb-1">PIN Baru (4 Digit):</label>
+                      <input
+                        type="password"
+                        maxLength={4}
+                        required
+                        value={pinForm.new}
+                        onChange={(e) => setPinForm({...pinForm, new: e.target.value})}
+                        className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                        placeholder="Masukkan PIN baru"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-stone-400 block mb-1">Konfirmasi PIN Baru:</label>
+                      <input
+                        type="password"
+                        maxLength={4}
+                        required
+                        value={pinForm.confirm}
+                        onChange={(e) => setPinForm({...pinForm, confirm: e.target.value})}
+                        className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                        placeholder="Ketik ulang PIN baru"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2 bg-[#C8A97E] text-slate-950 font-bold text-xs uppercase tracking-wider rounded font-mono cursor-pointer transition hover:bg-[#b5966b]"
+                    >
+                      Ubah PIN
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+            
+            {adminActiveTab === 'stock' && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  {/* STOCK FORM */}
+                  <div className="bg-[#161616] border border-white/5 p-6 rounded-2xl space-y-6">
+                    <h3 className="text-sm font-bold text-white uppercase tracking-wide">Adjust Stok</h3>
+                    <form onSubmit={handleStockAdjust} className="space-y-4">
+                      <div>
+                        <label className="text-[10px] text-stone-400 block mb-1">Pilih Produk:</label>
+                        <select
+                          required
+                          value={stockForm.productId}
+                          onChange={(e) => setStockForm({...stockForm, productId: e.target.value})}
+                          className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                        >
+                          <option value="">-- Pilih Produk --</option>
+                          {products.map(p => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} (Sisa: {p.stock} | Min: {p.min_stock_alert || 0})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Tipe:</label>
+                          <select
+                            required
+                            value={stockForm.type}
+                            onChange={(e) => setStockForm({...stockForm, type: e.target.value})}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          >
+                            <option value="IN">Masuk (IN)</option>
+                            <option value="OUT">Keluar (OUT)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-stone-400 block mb-1">Jumlah:</label>
+                          <input
+                            type="number"
+                            min="1"
+                            required
+                            value={stockForm.quantity}
+                            onChange={(e) => setStockForm({...stockForm, quantity: e.target.value})}
+                            className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] text-stone-400 block mb-1">Catatan:</label>
+                        <input
+                          type="text"
+                          required
+                          value={stockForm.notes}
+                          onChange={(e) => setStockForm({...stockForm, notes: e.target.value})}
+                          className="w-full bg-[#121212] border border-white/10 rounded p-2 text-xs text-white"
+                          placeholder="Misal: Restock Harian"
+                        />
+                      </div>
+
+                      <button type="submit" className="w-full py-2 bg-[#C8A97E] text-slate-950 font-bold rounded cursor-pointer transition hover:bg-[#b5966b]">Simpan</button>
+                    </form>
+                  </div>
+
+                  {/* ALERTS & LOGS */}
+                  <div className="lg:col-span-2 space-y-6">
+                    {products.filter(p => p.stock <= (p.min_stock_alert || 10)).length > 0 && (
+                      <div className="bg-rose-500/10 border border-rose-500/30 p-4 rounded-xl">
+                        <h4 className="text-xs text-rose-500 font-bold uppercase mb-2">Peringatan: Stok Menipis!</h4>
+                        <div className="space-y-1">
+                          {products.filter(p => p.stock <= (p.min_stock_alert || 10)).map(p => (
+                            <div key={p.id} className="text-[10px] text-rose-300 font-mono">
+                              ⚠️ {p.name} — Sisa: <strong className="text-white">{p.stock}</strong> (Batas: {p.min_stock_alert || 10})
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="bg-[#161616] border border-white/5 p-6 rounded-2xl">
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wide mb-4">Log Riwayat Stok</h3>
+                      <div className="max-h-96 overflow-y-auto space-y-2">
+                        {stockLogs.map(log => (
+                          <div key={log.id} className="flex items-center justify-between p-3 bg-[#121212] rounded-lg border border-white/5">
+                            <div>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded mr-2 ${log.type === 'IN' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                                {log.type}
+                              </span>
+                              <span className="text-xs font-bold text-stone-200">{log.products?.name}</span>
+                              <span className="block text-[10px] text-stone-500 mt-1">{log.notes}</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xs font-mono font-bold text-white">{log.type === 'IN' ? '+' : '-'}{log.quantity}</span>
+                              <span className="block text-[9px] text-stone-600 mt-1">{new Date(log.createdAt).toLocaleDateString('id-ID')}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2606,31 +3105,58 @@ export default function App() {
               </div>
             </div>
 
-            {/* STEP 2: GATEWAY QRIS DYNAMIC VIEW */}
+            {/* STEP 2: SELECT PAYMENT METHOD */}
             <div className="bg-[#121212] p-4 rounded-xl border border-white/5 space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-[10.5px] text-[#C8A97E] font-bold font-mono uppercase tracking-wider">2. Pembayaran QRIS</span>
-                <span className="text-[9px] bg-emerald-500/10 text-emerald-400 font-mono px-2 py-0.5 rounded font-bold animate-pulse">AKTIF</span>
-              </div>
+              <span className="text-[10.5px] text-[#C8A97E] font-bold font-mono uppercase tracking-wider block">2. Pilih Metode Pembayaran</span>
               
-              <div className="bg-white/5 border border-dashed border-[#C8A97E]/30 rounded-lg p-3 flex flex-col items-center space-y-4">
-                {/* QR Code with scanning sweeping line animation */}
-                <div className="bg-white p-2.5 rounded-xl shrink-0 w-44 h-44 flex items-center justify-center relative shadow-lg overflow-hidden">
-                  <QrCode className="w-40 h-40 text-stone-900" />
-                  {/* Sweeping bar red visual */}
-                  <div className="absolute left-0 right-0 h-1 bg-rose-500 opacity-60 shadow-[0_0_10px_#f43f5e] animate-scanner-bar" />
-                </div>
-
-                <div className="text-center space-y-1">
-                  <span className="text-[10px] text-stone-500 font-mono">NMID: ID1026065555541</span>
-                  <p className="text-[10px] text-stone-400 max-w-xs leading-relaxed">
-                    Scan QRIS di atas untuk melakukan simulasi transfer instan menggunakan Mobile Banking atau Dompet Digital Anda.
-                  </p>
-                </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setSelectedPayment('Cash')}
+                  className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-2 transition cursor-pointer ${
+                    selectedPayment === 'Cash' 
+                      ? 'bg-[#C8A97E]/10 border-[#C8A97E] text-white' 
+                      : 'bg-[#161616] border-white/5 text-stone-400 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">💵</span>
+                  <span className="font-bold text-[11px] uppercase tracking-wider">Tunai (Cash)</span>
+                </button>
+                
+                <button
+                  onClick={() => setSelectedPayment('Cashless')}
+                  className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-2 transition cursor-pointer ${
+                    selectedPayment === 'Cashless' 
+                      ? 'bg-[#C8A97E]/10 border-[#C8A97E] text-white' 
+                      : 'bg-[#161616] border-white/5 text-stone-400 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">📱</span>
+                  <span className="font-bold text-[11px] uppercase tracking-wider">Cashless / QRIS</span>
+                </button>
               </div>
+
+              {selectedPayment === 'Cashless' && (
+                <div className="mt-4 bg-white/5 border border-dashed border-[#C8A97E]/30 rounded-lg p-3 flex flex-col items-center space-y-3 animate-fadeIn">
+                  <div className="bg-white p-2.5 rounded-xl shrink-0 w-32 h-32 flex items-center justify-center relative shadow-lg overflow-hidden">
+                    <QrCode className="w-28 h-28 text-stone-900" />
+                    <div className="absolute left-0 right-0 h-1 bg-rose-500 opacity-60 shadow-[0_0_10px_#f43f5e] animate-scanner-bar" />
+                  </div>
+                  <div className="text-center space-y-1">
+                    <span className="text-[10px] text-stone-500 font-mono">NMID: ID1026065555541</span>
+                    <p className="text-[9px] text-stone-400">Silakan scan QRIS untuk pembayaran Cashless.</p>
+                  </div>
+                </div>
+              )}
+              
+              {selectedPayment === 'Cash' && (
+                <div className="mt-4 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-center animate-fadeIn">
+                  <p className="text-[10px] text-amber-500">Anda Memilih Pembayaran Tunai</p>
+                  <p className="text-[9px] text-stone-400">Silakan bayar di kasir setelah mengkonfirmasi pesanan.</p>
+                </div>
+              )}
 
               <div className="pt-2 border-t border-stone-880 border-white/5 flex justify-between text-xs text-stone-400 font-mono">
-                <span>Nilai Checkout QRIS:</span>
+                <span>Nilai Tagihan:</span>
                 <span className="font-bold text-white text-sm">Rp{getGrandTotal().toLocaleString('id-ID')}</span>
               </div>
             </div>
@@ -2644,15 +3170,12 @@ export default function App() {
               </button>
               
               <button
-                onClick={() => {
-                  setSelectedPayment('QRIS');
-                  executeOrderCheckout();
-                }}
-                disabled={isProcessingPayment}
-                className="flex-1 py-3 bg-[#C8A97E] hover:bg-[#bba075] text-[#0F0F0F] font-bold text-xs uppercase rounded-xl cursor-pointer transition transform active:scale-95 duration-100 shadow-md"
+                onClick={() => executeOrderCheckout()}
+                disabled={isProcessingPayment || !selectedPayment}
+                className="flex-1 py-3 bg-[#C8A97E] hover:bg-[#bba075] text-[#0F0F0F] font-bold text-xs uppercase rounded-xl cursor-pointer transition transform active:scale-95 duration-100 shadow-md disabled:opacity-50"
                 id="modal-payment-button"
               >
-                {isProcessingPayment ? 'Memproses Transaksi...' : 'Konfirmasi Sudah Bayar QRIS ✔'}
+                {isProcessingPayment ? 'Memproses Transaksi...' : selectedPayment ? 'Konfirmasi Pesanan ✔' : 'Pilih Metode Bayar'}
               </button>
             </div>
 
@@ -2777,13 +3300,11 @@ export default function App() {
 
             {/* ERROR STATS DISPLAY */}
             {pinError ? (
-              <div className="text-center text-[10.5px] text-rose-500 font-medium py-1 animate-pulse">
+              <div className="text-center text-[10.5px] text-rose-500 font-medium py-1 animate-pulse h-6 flex items-center justify-center">
                 {pinError}
               </div>
             ) : (
-              <div className="text-center text-[9px] text-[#C8A97E]/60 font-mono py-1">
-                PIN DEFAULT: <span className="font-bold underline text-white">0000</span>
-              </div>
+              <div className="h-6"></div>
             )}
 
             {/* NUMPAD GRID */}
