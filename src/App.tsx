@@ -128,7 +128,7 @@ export default function App() {
 
   const fetchMenus = async () => {
     try {
-      const data = await dbRead('menus');
+      const data = await dbRead('products');
       setProducts(data || []);
     } catch (e) {
       console.error(e);
@@ -137,16 +137,86 @@ export default function App() {
 
   const fetchOrdersAndReports = async () => {
     try {
-      const ordersData = await dbRead('orders');
-      setOrderHistory(ordersData || []);
+      const { supabase } = await import('./supabaseClient');
+      const { data: rawOrders, error: ordersError } = await supabase.from('orders').select('*, order_items(*)').order('createdAt', { ascending: false });
+      if (ordersError) throw ordersError;
 
-      const resReports = await fetch('/api/reports');
-      const reports = await resReports.json();
-      setReportData(reports);
+      const formattedOrders = (rawOrders || []).map((o: any) => ({
+        ...o,
+        items: o.order_items || []
+      }));
+      setOrderHistory(formattedOrders);
 
-      const resNotif = await fetch('/api/notifications');
-      const notifs = await resNotif.json();
-      setNotifications(notifs);
+      // Calculate Reports
+      const completedOrders = formattedOrders.filter(o => o.orderStatus !== 'Cancelled');
+      const totalOmzet = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.grandTotal) : 0), 0);
+      const totalWaitressFee = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.waitressFee) : 0), 0);
+      const subtotalOmzet = completedOrders.reduce((sum, o) => sum + (o.paymentStatus === 'Paid' ? Number(o.subtotal) : 0), 0);
+
+      const salesByDay: Record<string, number> = {};
+      const feesByDay: Record<string, number> = {};
+      const dates = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        return d.toISOString().split('T')[0];
+      }).reverse();
+
+      dates.forEach(d => {
+        salesByDay[d] = 0;
+        feesByDay[d] = 0;
+      });
+
+      completedOrders.forEach(o => {
+        if (o.paymentStatus === 'Paid' && o.createdAt) {
+          const dateStr = o.createdAt.split('T')[0];
+          if (salesByDay[dateStr] !== undefined) {
+            salesByDay[dateStr] += Number(o.grandTotal);
+            feesByDay[dateStr] += Number(o.waitressFee);
+          }
+        }
+      });
+
+      const reportDaily = dates.map(d => ({
+        date: d,
+        omzet: salesByDay[d],
+        fees: feesByDay[d]
+      }));
+
+      const itemsMap: Record<string, { name: string; category: string; quantity: number; revenue: number }> = {};
+      
+      completedOrders.forEach(o => {
+        if (o.paymentStatus === 'Paid') {
+          o.items.forEach((item: any) => {
+            if (!itemsMap[item.productId]) {
+              itemsMap[item.productId] = {
+                name: item.name,
+                category: 'Produk', // Simplified since we don't join products here
+                quantity: 0,
+                revenue: 0
+              };
+            }
+            itemsMap[item.productId].quantity += Number(item.quantity);
+            itemsMap[item.productId].revenue += Number(item.price) * Number(item.quantity);
+          });
+        }
+      });
+
+      const bestSellers = Object.values(itemsMap).sort((a: any, b: any) => b.quantity - a.quantity);
+
+      setReportData({
+        totalOmzet,
+        totalWaitressFee,
+        subtotalOmzet,
+        dailySales: reportDaily,
+        bestSellers,
+        logs: [],
+        totalOrdersCount: formattedOrders.length,
+        unpaidCount: formattedOrders.filter(o => o.paymentStatus === 'Unpaid').length,
+        preparingCount: formattedOrders.filter(o => o.orderStatus === 'Preparing').length,
+        readyCount: formattedOrders.filter(o => o.orderStatus === 'Ready').length
+      });
+
+      setNotifications([]);
     } catch (e) {
       console.error(e);
     }
@@ -360,12 +430,47 @@ export default function App() {
     };
 
     try {
-      const insertedData = await dbInsert('orders', orderPayload);
-      if (insertedData && insertedData.length > 0) {
-        setActiveTrackingId(insertedData[0].id);
+      const { items, ...orderData } = orderPayload;
+      // Add shortId
+      orderData.shortId = `A${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+      orderData.paymentStatus = (selectedPayment === 'Cash' || !selectedPayment) ? 'Unpaid' : 'Waiting Payment';
+      orderData.orderStatus = 'Pending';
+      
+      const { supabase } = await import('./supabaseClient');
+      const { data: insertedOrder, error: orderError } = await supabase.from('orders').insert(orderData).select();
+      
+      if (orderError) throw orderError;
+      
+      if (insertedOrder && insertedOrder.length > 0) {
+        const newOrderId = insertedOrder[0].id;
+        
+        // Insert items
+        if (items && items.length > 0) {
+          const orderItems = items.map((it: any) => ({
+            orderId: newOrderId,
+            productId: it.productId,
+            name: it.name,
+            price: it.price,
+            quantity: it.quantity,
+            notes: it.notes
+          }));
+          const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
+          if (itemsError) throw itemsError;
+        }
+
+        setActiveTrackingId(newOrderId);
         setCart([]);
         setAppliedVoucher(null);
         setVoucherCode('');
+        
+        // Deduct products stock temporarily (optional but good for realtime)
+        items.forEach(async (it: any) => {
+          const { data: product } = await supabase.from('products').select('stock').eq('id', it.productId).single();
+          if (product && product.stock >= it.quantity) {
+             await supabase.from('products').update({ stock: product.stock - it.quantity }).eq('id', it.productId);
+          }
+        });
+
         setTimeout(() => {
           setIsProcessingPayment(false);
           setIsCheckoutOpen(false);
@@ -376,7 +481,8 @@ export default function App() {
         setIsProcessingPayment(false);
       }
     } catch (e) {
-      alert('Koneksi backend gagal');
+      console.error(e);
+      alert('Koneksi backend atau format pesanan gagal');
       setIsProcessingPayment(false);
     }
   };
@@ -396,11 +502,8 @@ export default function App() {
   };
 
   const handleResetDatabase = async () => {
-    if (confirm('Riset data simulasi ke setelan default cafe?')) {
-      await fetch('/api/reset', { method: 'POST' });
-      fetchMenus();
-      fetchOrdersAndReports();
-      setActiveTrackingId(null);
+    if (confirm('Riset data database Supabase tidak diizinkan dari Frontend.')) {
+      alert('Tindakan ini tidak bisa dilakukan langsung dari browser.');
     }
   };
 
@@ -490,14 +593,14 @@ export default function App() {
       const importedProducts = await importMenusFromSheet(googleAccessToken, googleSpreadsheetId);
       
       // Delete existing and insert new
-      await dbDelete('menus', {}); // Assuming we can do broad deletes this way, or we'd just use supabase directly.
+      await dbDelete('products', {}); // Assuming we can do broad deletes this way, or we'd just use supabase directly.
       const { supabase } = await import('./supabaseClient');
-      await supabase.from('menus').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all rows
+      await supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all rows
       
       if (importedProducts.length > 0) {
-        await supabase.from('menus').insert(importedProducts);
+        await supabase.from('products').insert(importedProducts);
       }
-      const data = await dbRead('menus');
+      const data = await dbRead('products');
       setProducts(data || []);
       alert(`Sinkronisasi Berhasil! Berhasil mengimpor ${importedProducts.length} produk dari Google Sheets.`);
     } catch (e: any) {
@@ -533,7 +636,7 @@ export default function App() {
         price: Number(newMenuForm.price),
         stock: Number(newMenuForm.stock)
       };
-      const inserted = await dbInsert('menus', payload);
+      const inserted = await dbInsert('products', payload);
       
       if (inserted) {
         setNewMenuForm({
@@ -560,7 +663,7 @@ export default function App() {
 
   const handleUpdateStock = async (id: string, nextStock: number) => {
     try {
-      await dbUpdate('menus', { stock: nextStock }, { id });
+      await dbUpdate('products', { stock: nextStock }, { id });
       fetchMenus();
     } catch (e) {
       console.error(e);
@@ -569,7 +672,7 @@ export default function App() {
 
   const handleDeleteProduct = async (id: string) => {
     if (confirm('Hapus item menu ini?')) {
-      await dbDelete('menus', { id });
+      await dbDelete('products', { id });
       fetchMenus();
     }
   };
@@ -589,7 +692,7 @@ export default function App() {
         isPromo: !!editingProduct.isPromo
       };
       
-      await dbUpdate('menus', payload, { id: editingProduct.id });
+      await dbUpdate('products', payload, { id: editingProduct.id });
       setEditingProduct(null);
       fetchMenus();
       alert('Menu kuliner berhasil diperbarui!');
@@ -883,7 +986,7 @@ export default function App() {
             <span><strong>DAPUR REAL-TIME:</strong> {notifications[0].message}</span>
           </div>
           <button 
-            onClick={async () => { await fetch('/api/notifications/clear', { method: 'POST' }); fetchOrdersAndReports(); }}
+            onClick={() => { setNotifications([]); }}
             className="underline font-bold text-[9px] uppercase cursor-pointer"
           >
             Clear
